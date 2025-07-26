@@ -1,0 +1,14 @@
+# server:  # 本地测试注释服务器配置
+#   host: "0.0.0.0"
+#   port: 8765
+#   ssl_cert: "config/ssl/cert.pem"
+#   ssl_key: "config/ssl/key.pem"
+ice_servers:
+  - urls: "stun:stun.l.google.com:19302"
+#  - urls: "turn:your-turn-server:3478"  # 可选 TURN
+#    username: "user"
+#    credential: "pass"
+models:
+  sensevoice: "/mnt/d/code/NEW_ASR_TTS/models/SenseVoiceSmall"
+  qwen: "/mnt/d/code/NEW_ASR_TTS/models/Qwen2.5-1.5B-Instruct"
+  cosyvoice: "/mnt/d/code/NEW_ASR_TTS/models/CosyVoice-300M-Instruct"
