@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC 全链路语音测试</title>
+  <style>
+    body { font-family: sans-serif; padding: 1rem; }
+    button { margin-right: .5rem; }
+    #log { white-space: pre-wrap; background: #f0f0f0; padding: .5rem; height: 150px; overflow: auto; margin-top: .5rem; }
+    #messages { background: #eef; padding: .5rem; min-height: 50px; margin-top: .5rem; }
+  </style>
+</head>
+<body>
+  <h1>WebRTC 全链路语音测试</h1>
+  <button id="startBtn">开始</button>
+  <button id="stopBtn" disabled>停止</button>
+
+  <h3>远端播放：</h3>
+  <audio id="remoteAudio" controls autoplay></audio>
+
+  <h3>识别 & 回复：</h3>
+  <div id="messages"></div>
+
+  <h3>流程日志：</h3>
+  <div id="log"></div>
+
+  <script>
+    const logEl = document.getElementById('log');
+    function log(msg) {
+      console.log(msg);
+      logEl.textContent += msg + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    const messagesEl = document.getElementById('messages');
+    function appendMessage(cls, text) {
+      const div = document.createElement('div');
+      div.className = cls;
+      div.textContent = text;
+      messagesEl.appendChild(div);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    let pc, ws, localStream;
+    let pingInterval;
+
+    document.getElementById('startBtn').onclick = async () => {
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = false;
+      log('👉 点击开始');
+
+      // 1. WebSocket 信令
+      ws = new WebSocket("wss://192.168.112.66:8443/wss/audio");
+      ws.onopen = () => {
+        log('✅ WebSocket 已连接');
+        // 心跳保活
+        pingInterval = setInterval(() => {
+          ws.send(JSON.stringify({ action: 'ping' }));
+        }, 10000);
+        negotiate();
+      };
+      ws.onerror = e => log('❌ WebSocket 错误: ' + e);
+      ws.onclose = () => {
+        log('❌ WebSocket 已关闭');
+        clearInterval(pingInterval);
+      };
+      ws.onmessage = async evt => {
+        // 处理 JSON 信令或 ASR/TTS
+        let data;
+        try { data = JSON.parse(evt.data); }
+        catch { return; }
+
+        // 文字识别
+        if (data.text && !data.tts_audio) {
+          appendMessage('asr', `识别：${data.text}`);
+        }
+        // TTS 文本
+        if (data.tts_audio) {
+          appendMessage('tts', `回复：${data.text}`);
+          // 可选：解码并播放 WebSocket 下发的 PCM
+          const raw = data.tts_audio.split(',')[1];
+          const buf = Uint8Array.from(atob(raw), c=>c.charCodeAt(0)).buffer;
+          const ctx = new AudioContext();
+          ctx.decodeAudioData(buf, decoded => {
+            const src = ctx.createBufferSource();
+            src.buffer = decoded;
+            src.connect(ctx.destination);
+            src.start();
+            log('🔊 WebSocket TTS 播放');
+          }, e=>console.error(e));
+        }
+        // SDP answer
+        if (data.answer) {
+          log('⬅️ 收到 SDP answer');
+          await pc.setRemoteDescription({ type: 'answer', sdp: data.answer });
+          log('✅ 已设置远端描述 (answer)');
+        }
+        // ICE candidate from server
+        if (data.candidate) {
+          log('⬅️ 收到远端 ICE candidate');
+          try { await pc.addIceCandidate(data.candidate); }
+          catch(e){ log('⚠️ addIceCandidate 失败: '+e); }
+        }
+      };
+
+      // 2. 发起 WebRTC 协商
+      async function negotiate() {
+        pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stuns:stun.l.google.com:19302' }]
+        });
+        pc.oniceconnectionstatechange = () =>
+          log(`ICE 状态: ${pc.iceConnectionState}`);
+
+        // 2.1 订阅远端 TTS 轨并播放
+        pc.ontrack = event => {
+          const audioEl = document.getElementById('remoteAudio');
+          if (!audioEl.srcObject) {
+            audioEl.srcObject = event.streams[0];
+            log('🎧 已订阅远端 TTS 音轨');
+          }
+        };
+
+        // 3. 获取麦克风
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          log('🎤 已获取麦克风');
+        } catch (e) {
+          log('❌ 获取麦克风失败: ' + e);
+          return;
+        }
+
+        // 4. 推送本地麦克风轨
+        localStream.getAudioTracks().forEach(track => {
+          pc.addTrack(track, localStream);
+          log('📤 添加本地音轨');
+        });
+
+        // 5. 收集本地 ICE candidate
+        pc.onicecandidate = ({ candidate }) => {
+          if (candidate) {
+            log('➡️ 本地 ICE candidate');
+            ws.send(JSON.stringify({ candidate }));
+          }
+        };
+
+        // 6. 创建并发送 offer
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        log('➡️ 发送 SDP offer');
+        ws.send(JSON.stringify({ offer: offer.sdp }));
+      }
+    };
+
+    document.getElementById('stopBtn').onclick = () => {
+      ws && ws.close();
+      pc && pc.close();
+      localStream && localStream.getTracks().forEach(t=>t.stop());
+      clearInterval(pingInterval);
+      log('⏹️ 已停止');
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+    };
+  </script>
+</body>
+</html>
